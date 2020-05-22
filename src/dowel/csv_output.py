@@ -19,7 +19,6 @@ class CsvOutput(FileOutput):
         super().__init__(file_name)
         self._writer = None
         self._fieldnames = None
-        self._warned_once = set()
         self._disable_warnings = False
 
     @property
@@ -28,7 +27,6 @@ class CsvOutput(FileOutput):
         return (TabularInput, )
 
     def record(self, data, prefix=''):
-        print("Log CSV")
         """Log tabular data to CSV."""
         if isinstance(data, TabularInput):
             to_csv = data.as_primitive_dict
@@ -38,14 +36,11 @@ class CsvOutput(FileOutput):
 
             if not self._writer:
                 self._fieldnames = set(to_csv.keys())
-                self._writer = csv.DictWriter(
-                    self._log_file,
-                    fieldnames=self._fieldnames,
-                    extrasaction='ignore')
+                self._writer = self._make_writer(actions='ignore')
                 self._writer.writeheader()
 
             if len(set(to_csv.keys()).difference(set(self._fieldnames))) > 0:
-                self._augment(deepcopy(data))
+                self._augment_csv(deepcopy(data))
 
             self._writer.writerow(to_csv)
 
@@ -54,23 +49,28 @@ class CsvOutput(FileOutput):
         else:
             raise ValueError('Unacceptable type.')
 
-    def _augment(self, data):
-        """Augment tabular data with new column(s)"""
+    def _augment_csv(self, data):
+        """Augment tabular data with new column(s)
+           
+           Old CSV file is renamed to a temporary file. Its
+           data is written line-by-line to the new file (of 
+           the original name) with the new keys.
+
+           The initial data.reset() call is to ensure that there
+           is no data spillage from the new key-value pair into
+           the old CSV rows.
+        """
         data.reset()
         self._log_file.close()
 
-        temp_file = self._file_name.split(".")
-        temp_file = "".join(temp_file[:-1]) + "_temp." + temp_file[-1]
+        temp_file = os.path.splitext(self._file_name)
+        temp_file = temp_file[0] + "_temp" + temp_file[1]
         os.rename(self._file_name, temp_file)
         old_file = open(temp_file, 'r')
         self._log_file = open(self._file_name, 'w')
 
         self._fieldnames = data.as_primitive_dict.keys()
-        self._writer = csv.DictWriter(
-                self._log_file,
-                fieldnames=self._fieldnames,
-                extrasaction='ignore')
-
+        self._writer = self._make_writer()
         self._writer.writeheader()
 
         reader = csv.DictReader(old_file)
@@ -81,20 +81,19 @@ class CsvOutput(FileOutput):
                 data.record(k, v)
             self._writer.writerow(data.as_primitive_dict)
             data.reset()
-        os.remove(temp_file)
         old_file.close()
+        os.remove(temp_file)
 
-    def _warn(self, msg):
-        """Warns the user using warnings.warn.
-
-        The stacklevel parameter needs to be 3 to ensure the call to logger.log
-        is the one printed.
-        """
-        if not self._disable_warnings and msg not in self._warned_once:
-            warnings.warn(
-                colorize(msg, 'yellow'), CsvOutputWarning, stacklevel=3)
-        self._warned_once.add(msg)
-        return msg
+    def _make_writer(self, log_file=None, fields=None, actions='raise'):
+        """Simplified method for creating new DictWriter object"""
+        if not log_file:
+            log_file = self._log_file
+        if not fields:
+            fields = self._fieldnames
+        return csv.DictWriter(
+                log_file,
+                fieldnames=fields,
+                extrasaction=actions)
 
     def disable_warnings(self):
         """Disable logger warnings for testing."""
